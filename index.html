@@ -101,6 +101,7 @@ const DEF_MATERIALS = [
 const STATUS_MAP = {
   aguardando:{ label:'Aguardando',   bg:'rgba(245,158,11,0.15)',  color:'#f59e0b', dot:'#f59e0b' },
   imprimindo: { label:'Em Impressão', bg:'rgba(56,189,248,0.15)', color:'#38bdf8', dot:'#38bdf8' },
+  impresso:   { label:'Impresso',     bg:'rgba(167,139,250,0.15)', color:'#a78bfa', dot:'#a78bfa' },
   entregue:   { label:'Entregue',     bg:'rgba(52,211,153,0.15)', color:'#34d399', dot:'#34d399' },
 };
 const PAY_METHODS = { pix:'Pix', cartao:'Cartão', entrada50:'50% + 50%', parcelado:'Parcelado' };
@@ -144,15 +145,17 @@ function calcCosts(o, cfg, mats) {
   const filamentCost    = r2((+o.weightGrams||0)*(mat.pricePerGram/1000));
   const electricityCost = r2((+o.printHours||0)*cfg.electricityPerHour);
   const laborCost       = r2((+o.laborHours||0)*cfg.laborPerHour);
-  const failureCost     = r2(+o.failureCost||0);
-  const totalCost       = r2(filamentCost+electricityCost+laborCost+failureCost);
+  const productionCost  = r2(filamentCost+electricityCost+laborCost);
+  const failureCost     = r2(productionCost*0.10); // fixo: 10% do custo de produção
+  const totalCost       = r2(productionCost+failureCost);
   const profit          = r2((+o.salePrice||0)-totalCost);
   const margin          = o.salePrice ? r2((profit/(+o.salePrice))*100) : 0;
   return { filamentCost,electricityCost,laborCost,failureCost,totalCost,profit,margin };
 }
 function suggestPrice(o, cfg, mats) {
   const mat = mats.find(m=>m.id===o.materialId)||{pricePerGram:cfg.filamentPerGram};
-  const cost=(+o.weightGrams||0)*(mat.pricePerGram/1000)+(+o.printHours||0)*cfg.electricityPerHour+(+o.laborHours||0)*cfg.laborPerHour+(+o.failureCost||0);
+  const production=(+o.weightGrams||0)*(mat.pricePerGram/1000)+(+o.printHours||0)*cfg.electricityPerHour+(+o.laborHours||0)*cfg.laborPerHour;
+  const cost=production*1.10; // inclui 10% de falhas
   return r2(cost*(1+cfg.defaultMargin/100));
 }
 function badge(type, map) {
@@ -244,7 +247,7 @@ function renderDashboard(main) {
   const revenue   = delivered.reduce((s,o)=>s+(o.salePrice||0),0);
   const profit    = delivered.reduce((s,o)=>s+(o.profit||0),0);
   const active    = state.orders.filter(o=>o.status!=='entregue').length;
-  const toReceive = state.orders.filter(o=>o.paymentStatus!=='pago'&&o.status==='entregue').reduce((s,o)=>s+(o.salePrice||0),0);
+  const toReceive = state.orders.filter(o=>o.paymentStatus!=='pago').reduce((s,o)=>s+(o.salePrice||0),0);
   const alerts    = getAlerts();
   const recent    = [...state.orders].sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,5);
 
@@ -363,9 +366,19 @@ function renderOrders(main) {
         </tr>`;
       }).join('');
 
-  const filterBtns = [['all','Todos'],['aguardando','Aguardando'],['imprimindo','Em Impressão'],['entregue','Entregue']].map(([v,l])=>
+  const filterBtns = [['all','Todos'],['aguardando','Aguardando'],['imprimindo','Em Impressão'],['impresso','Impresso'],['entregue','Entregue']].map(([v,l])=>
     `<button onclick="setOrderFilter('${v}')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition ${orderFilter===v?'bg-violet-600 text-white':'bg-[#1e2535] text-gray-500 hover:text-gray-300'}">${l}</button>`
   ).join('');
+
+  const totalPrice  = filtered.reduce((s,o)=>s+(o.salePrice||0),0);
+  const totalProfit = filtered.reduce((s,o)=>s+(o.profit||0),0);
+  const totalRow = filtered.length>0 ? `
+    <tr class="border-t-2 border-[#2a3045]">
+      <td colspan="4" class="py-3 pr-4 text-xs font-bold text-gray-500 uppercase tracking-widest">${filtered.length} pedido(s)</td>
+      <td class="py-3 pr-4 font-bold text-white font-mono">${fmt(totalPrice)}</td>
+      <td class="py-3 pr-4"><span class="font-bold font-mono ${totalProfit>=0?'text-emerald-400':'text-red-400'}">${fmt(totalProfit)}</span></td>
+      <td colspan="2"></td>
+    </tr>` : '';
 
   main.innerHTML = `
     <div class="flex items-center justify-between px-6 py-5 border-b border-[#1e2535]">
@@ -381,7 +394,7 @@ function renderOrders(main) {
         <thead><tr class="text-left text-gray-600 text-xs uppercase tracking-widest border-b border-[#1e2535]">
           ${['Pedido','Cliente','Status','Prazo','Preço','Lucro','Pagamento',''].map(h=>`<th class="pb-3 pr-4 font-semibold">${h}</th>`).join('')}
         </tr></thead>
-        <tbody class="divide-y divide-[#1a1f2e]">${rows}</tbody>
+        <tbody class="divide-y divide-[#1a1f2e]">${rows}${totalRow}</tbody>
       </table>
     </div>`;
   lucide.createIcons();
@@ -404,10 +417,11 @@ function updateOrderCosts() {
   const costs = calcCosts(f, state.settings, state.materials);
   const suggested = suggestPrice(f, state.settings, state.materials);
   const el = id => document.getElementById(id);
-  if(el('cost-fil'))  el('cost-fil').textContent  = fmt(costs.filamentCost);
-  if(el('cost-elec')) el('cost-elec').textContent = fmt(costs.electricityCost);
-  if(el('cost-lab'))  el('cost-lab').textContent  = fmt(costs.laborCost);
-  if(el('cost-total'))el('cost-total').textContent= fmt(costs.totalCost);
+  if(el('cost-fil'))       el('cost-fil').textContent        = fmt(costs.filamentCost);
+  if(el('cost-elec'))      el('cost-elec').textContent       = fmt(costs.electricityCost);
+  if(el('cost-lab'))       el('cost-lab').textContent        = fmt(costs.laborCost);
+  if(el('cost-fail-display')) el('cost-fail-display').textContent = fmt(costs.failureCost);
+  if(el('cost-total'))     el('cost-total').textContent      = fmt(costs.totalCost);
   if(el('cost-sug'))  { el('cost-sug').textContent=`Usar sugestão: ${fmt(suggested)}`; el('cost-sug').dataset.val=suggested; }
   if(el('profit-block')) {
     if(+f.salePrice>0) {
@@ -446,6 +460,7 @@ function renderOrderForm() {
           <select class="ic" onchange="updateOrderField('status',this.value)">
             <option value="aguardando" ${f.status==='aguardando'?'selected':''}>Aguardando</option>
             <option value="imprimindo" ${f.status==='imprimindo'?'selected':''}>Em Impressão</option>
+            <option value="impresso"   ${f.status==='impresso'?'selected':''}>Impresso</option>
             <option value="entregue"   ${f.status==='entregue'?'selected':''}>Entregue</option>
           </select></div>
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Prazo de Entrega</label>
@@ -460,8 +475,8 @@ function renderOrderForm() {
             <input type="number" class="ic" min="0" step="0.5" value="${f.printHours}" oninput="updateOrderField('printHours',this.value);updateOrderCosts()" placeholder="0"></div>
           <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Horas trabalhadas (h) → ${fmt(costs.laborCost)}</label>
             <input type="number" class="ic" min="0" step="0.5" value="${f.laborHours}" oninput="updateOrderField('laborHours',this.value);updateOrderCosts()" placeholder="0"></div>
-          <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Custo de falhas/reimpressão (R$)</label>
-            <input type="number" class="ic" min="0" step="0.50" value="${f.failureCost}" oninput="updateOrderField('failureCost',this.value);updateOrderCosts()" placeholder="0"></div>
+          <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Custo de falhas (10% automático)</label>
+            <div class="ic flex items-center justify-between" style="cursor:default;opacity:0.7"><span id="cost-fail-display">${fmt(costs.failureCost)}</span><span class="text-xs text-gray-600">calculado</span></div></div>
         </div>
         <div class="flex items-center justify-between pt-2 border-t border-[#2a3045] text-sm">
           <span class="text-gray-500">Custo total: <span class="text-white font-bold">${fmt(costs.totalCost)}</span></span>
@@ -734,7 +749,7 @@ function renderSettings(main) {
           <p id="settings-formula">🧵 <span class="text-gray-300">Filamento:</span> Peso (g) × R$${(f.filamentPerGram/1000).toFixed(3)}/g  (= R$${f.filamentPerGram}/kg)</p>
           <p>⚡ <span class="text-gray-300">Energia:</span> Tempo impressão (h) × R$${f.electricityPerHour}/h</p>
           <p>👷 <span class="text-gray-300">Mão de obra:</span> Horas trabalhadas × R$${f.laborPerHour}/h</p>
-          <p>🔄 <span class="text-gray-300">Falhas:</span> Valor manual por pedido</p>
+          <p>🔄 <span class="text-gray-300">Falhas:</span> 10% do custo de produção (automático)</p>
           <p class="pt-2 border-t border-[#1e2535]">💰 <span class="text-gray-300">Preço sugerido</span> = Custo total × (1 + ${f.defaultMargin}%)</p>
         </div>
       </div>
@@ -764,7 +779,7 @@ function importData(e) {
 
 // ── MODAL ─────────────────────────────────────────────────────────────────────
 function closeModal() { document.getElementById('modal').classList.add('hidden'); editingOrder=null; editingClient=null; editingMat=null; }
-document.getElementById('modal').addEventListener('click',function(e){ if(e.target===this) closeModal(); });
+document.getElementById('modal').addEventListener('click',function(e){ if(e.target===this){ if(editingClient||editingOrder||editingMat){ if(confirm('Sair sem salvar?')) closeModal(); } else closeModal(); } });
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-btn').forEach(b=>{ b.addEventListener('click',()=>setTab(b.dataset.tab)); });
