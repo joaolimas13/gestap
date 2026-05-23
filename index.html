@@ -213,10 +213,9 @@ function renderDashboard(main) {
   const thisMonthO=getMonthOrders(now);
   const delivered=thisMonthO.filter(o=>o.status==='entregue');
   const revenue=delivered.reduce((s,o)=>s+(o.salePrice||0),0);
-  const grossProfit=delivered.reduce((s,o)=>s+(o.profit||0),0);
   const thisMonthExp=getMonthExpenses(now);
   const expenses=thisMonthExp.reduce((s,e)=>s+(e.amount||0),0);
-  const netProfit=r2(grossProfit-expenses);
+  const netProfit=r2(revenue-expenses); // Lucro real = Faturamento − Gastos (custo de produção entra pelos Gastos)
   const active=state.orders.filter(o=>o.status!=='entregue').length;
   const toReceive=state.orders.filter(o=>o.paymentStatus!=='pago').reduce((s,o)=>s+(o.salePrice||0),0);
   const consignPending=state.consignment.filter(c=>c.status==='ativo').reduce((s,c)=>s+((+c.quantitySent-(+c.quantitySold||0))*+(c.yourPricePerUnit||0)),0);
@@ -235,7 +234,9 @@ function renderDashboard(main) {
     const d=new Date(now.getFullYear(),now.getMonth()-(5-i),1);
     const mo=getMonthOrders(d).filter(o=>o.status==='entregue');
     const exps=getMonthExpenses(d);
-    return {name:MONTHS[d.getMonth()],fat:r2(mo.reduce((s,o)=>s+(o.salePrice||0),0)),luc:r2(mo.reduce((s,o)=>s+(o.profit||0),0)),gas:r2(exps.reduce((s,e)=>s+(e.amount||0),0))};
+    const fat=r2(mo.reduce((s,o)=>s+(o.salePrice||0),0));
+    const gas=r2(exps.reduce((s,e)=>s+(e.amount||0),0));
+    return {name:MONTHS[d.getMonth()],fat,gas,liq:r2(fat-gas)};
   });
 
   const recent=[...state.orders].sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)).slice(0,5);
@@ -291,8 +292,8 @@ function renderDashboard(main) {
   setTimeout(()=>{
     makeBarChart('chart-db',chartData.map(d=>d.name),[
       {label:'Faturamento',data:chartData.map(d=>d.fat),backgroundColor:'#7c3aed',borderRadius:4},
-      {label:'Lucro Bruto',data:chartData.map(d=>d.luc),backgroundColor:'#10b981',borderRadius:4},
       {label:'Gastos',data:chartData.map(d=>d.gas),backgroundColor:'#ef4444',borderRadius:4},
+      {label:'Lucro Líquido',data:chartData.map(d=>d.liq),backgroundColor:'#10b981',borderRadius:4},
     ]);
   },50);
 }
@@ -795,30 +796,24 @@ function renderFinanceiro(main){
     const mo=getMonthOrders(d).filter(o=>o.status==='entregue');
     const ex=getMonthExpenses(d);
     const fat=r2(mo.reduce((s,o)=>s+(o.salePrice||0),0));
-    const cus=r2(mo.reduce((s,o)=>s+(o.totalCost||0),0));
-    const lucBruto=r2(mo.reduce((s,o)=>s+(o.profit||0),0));
     const gas=r2(ex.reduce((s,e)=>s+(e.amount||0),0));
-    const lucLiq=r2(lucBruto-gas);
-    return{name:MONTHS[d.getMonth()],fat,cus,lucBruto,gas,lucLiq};
+    return{name:MONTHS[d.getMonth()],fat,gas,liq:r2(fat-gas)};
   });
 
   const allDel=state.orders.filter(o=>o.status==='entregue');
   const totRev=allDel.reduce((s,o)=>s+(o.salePrice||0),0);
-  const totCust=allDel.reduce((s,o)=>s+(o.totalCost||0),0);
-  const totLucBruto=r2(totRev-totCust);
   const totGas=state.expenses.reduce((s,e)=>s+(e.amount||0),0);
-  const totLucLiq=r2(totLucBruto-totGas);
+  const totLucLiq=r2(totRev-totGas);
 
   const getPeriod=pStr=>{
     const[y,m]=pStr.split('-').map(Number);
     const d=new Date(y,m-1,1);
     const mo=getMonthOrders(d).filter(o=>o.status==='entregue');
     const ex=getMonthExpenses(d);
-    const rev=mo.reduce((s,o)=>s+(o.salePrice||0),0),cost=mo.reduce((s,o)=>s+(o.totalCost||0),0);
-    const lucBruto=r2(rev-cost);
+    const rev=mo.reduce((s,o)=>s+(o.salePrice||0),0);
     const gas=ex.reduce((s,e)=>s+(e.amount||0),0);
-    const lucLiq=r2(lucBruto-gas);
-    return{total:getMonthOrders(d).length,delivered:mo.length,rev,cost,lucBruto,gas,lucLiq,margin:rev?r2((lucLiq/rev)*100):0};
+    const lucLiq=r2(rev-gas);
+    return{total:getMonthOrders(d).length,delivered:mo.length,rev,gas,lucLiq,margin:rev?r2((lucLiq/rev)*100):0};
   };
   const fmtP=p=>{const[y,m]=p.split('-').map(Number);return`${MONTHS[m-1]}/${y}`;};
   const pd1=getPeriod(finP1),pd2=getPeriod(finP2);
@@ -828,9 +823,7 @@ function renderFinanceiro(main){
     <div class="space-y-2 text-sm">
       <div class="flex justify-between"><span class="text-gray-500">Pedidos</span><span class="text-white">${d.total} (${d.delivered} entregues)</span></div>
       <div class="flex justify-between"><span class="text-gray-500">Faturamento</span><span class="text-violet-400 font-bold font-mono">${fmt(d.rev)}</span></div>
-      <div class="flex justify-between"><span class="text-gray-500">Custo produção</span><span class="text-red-400 font-mono">${fmt(d.cost)}</span></div>
-      <div class="flex justify-between"><span class="text-gray-500">Lucro bruto</span><span class="text-emerald-400 font-mono">${fmt(d.lucBruto)}</span></div>
-      <div class="flex justify-between"><span class="text-gray-500">Gastos</span><span class="text-red-400 font-mono">- ${fmt(d.gas)}</span></div>
+      <div class="flex justify-between"><span class="text-gray-500">Gastos registrados</span><span class="text-red-400 font-mono">- ${fmt(d.gas)}</span></div>
       <div class="flex justify-between pt-2 border-t border-[#2a3045]"><span class="text-white font-bold">Lucro Líquido</span><span class="font-bold font-mono ${d.lucLiq>=0?'text-emerald-400':'text-red-400'}">${fmt(d.lucLiq)}</span></div>
       <div class="flex justify-between"><span class="text-gray-500">Margem líquida</span><span class="text-white">${d.margin}%</span></div>
     </div>
@@ -841,16 +834,15 @@ function renderFinanceiro(main){
       <div><h1 class="text-lg font-bold text-white">Financeiro — DRE</h1><p class="text-xs text-gray-500">Demonstrativo de resultado completo</p></div>
     </div>
     <!-- TOTAIS HISTORICOS -->
-    <div class="grid grid-cols-4 gap-4 p-6 pb-3">
+    <div class="grid grid-cols-3 gap-4 p-6 pb-3">
       ${sCard('Faturamento Total',fmt(totRev),`${allDel.length} pedidos entregues`,'linear-gradient(135deg,#7c3aed,#4f46e5)','dollar-sign')}
-      ${sCard('Custo de Produção',fmt(totCust),'Filamento + energia + MO','linear-gradient(135deg,#b45309,#f59e0b)','package')}
-      ${sCard('Gastos Totais',fmt(totGas),'Despesas operacionais','linear-gradient(135deg,#dc2626,#ef4444)','credit-card')}
-      ${sCard('Lucro Líquido',fmt(totLucLiq),'Após custos e gastos',totLucLiq>=0?'linear-gradient(135deg,#059669,#10b981)':'linear-gradient(135deg,#991b1b,#dc2626)','trending-up')}
+      ${sCard('Gastos Totais',fmt(totGas),'Despesas operacionais registradas','linear-gradient(135deg,#dc2626,#ef4444)','credit-card')}
+      ${sCard('Lucro Líquido',fmt(totLucLiq),'Faturamento − Gastos',totLucLiq>=0?'linear-gradient(135deg,#059669,#10b981)':'linear-gradient(135deg,#991b1b,#dc2626)','trending-up')}
     </div>
     <!-- GRAFICO 12 MESES -->
     <div class="px-6 pb-4">
       <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5">
-        <p class="text-xs font-bold text-gray-600 uppercase tracking-widest mb-4">Últimos 12 meses — Faturamento, Lucro Bruto, Gastos e Lucro Líquido</p>
+        <p class="text-xs font-bold text-gray-600 uppercase tracking-widest mb-4">Últimos 12 meses — Faturamento, Gastos e Lucro Líquido</p>
         <div style="height:240px"><canvas id="chart-fin"></canvas></div>
       </div>
     </div>
@@ -872,14 +864,13 @@ function renderFinanceiro(main){
   setTimeout(()=>{
     makeLineChart('chart-fin',monthly.map(d=>d.name),[
       {label:'Faturamento',data:monthly.map(d=>d.fat),borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,.1)',fill:true,tension:0.4,borderWidth:2},
-      {label:'Lucro Bruto',data:monthly.map(d=>d.lucBruto),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.1)',fill:true,tension:0.4,borderWidth:2},
       {label:'Gastos',data:monthly.map(d=>d.gas),borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.1)',fill:true,tension:0.4,borderWidth:2},
-      {label:'Lucro Líquido',data:monthly.map(d=>d.lucLiq),borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.1)',fill:true,tension:0.4,borderWidth:2},
+      {label:'Lucro Líquido',data:monthly.map(d=>d.liq),borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.1)',fill:true,tension:0.4,borderWidth:2},
     ]);
-    const cmpLabels=['Faturamento','Lucro Bruto','Gastos','Lucro Líquido'];
+    const cmpLabels=['Faturamento','Gastos','Lucro Líquido'];
     makeBarChart('chart-cmp',cmpLabels,[
-      {label:fmtP(finP1),data:[pd1.rev,pd1.lucBruto,pd1.gas,pd1.lucLiq],backgroundColor:'#7c3aed',borderRadius:4},
-      {label:fmtP(finP2),data:[pd2.rev,pd2.lucBruto,pd2.gas,pd2.lucLiq],backgroundColor:'#10b981',borderRadius:4},
+      {label:fmtP(finP1),data:[pd1.rev,pd1.gas,pd1.lucLiq],backgroundColor:'#7c3aed',borderRadius:4},
+      {label:fmtP(finP2),data:[pd2.rev,pd2.gas,pd2.lucLiq],backgroundColor:'#10b981',borderRadius:4},
     ]);
   },50);
 }
