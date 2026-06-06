@@ -111,6 +111,12 @@ const PAY_STATUS_MAP = {
   parcial: {label:'Entrada Paga', color:'#fbbf24'},
   pago:    {label:'Pago',         color:'#34d399'},
 };
+const TIPO_VENDA = {
+  individual: {label:'Individual', bg:'rgba(124,58,237,0.15)', color:'#a78bfa'},
+  b2b:        {label:'B2B / Atacado', bg:'rgba(56,189,248,0.15)', color:'#38bdf8'},
+  evento:     {label:'Evento', bg:'rgba(245,158,11,0.15)', color:'#f59e0b'},
+  consignacao:{label:'Consignação', bg:'rgba(52,211,153,0.15)', color:'#34d399'},
+};
 const EXPENSE_CATS = ['Filamento','Equipamento','Manutenção','Embalagem','Marketing','Software','Infraestrutura','Transporte','Outros'];
 const EXPENSE_ICONS = {Filamento:'🧵',Equipamento:'🖨️',Manutenção:'🔧',Embalagem:'📦',Marketing:'📣',Software:'💻',Infraestrutura:'🏠',Transporte:'🚗',Outros:'📋'};
 const CONSIGN_STATUS = {ativo:{label:'Ativo',color:'#38bdf8'},encerrado:{label:'Encerrado',color:'#6b7280'}};
@@ -135,7 +141,50 @@ const genId = () => Math.random().toString(36).substr(2,9);
 const today = () => new Date().toISOString().split('T')[0];
 const esc   = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-function getAlerts() {
+function badge(type, map) {
+  const c=map[type]||{label:type,bg:'rgba(107,114,128,0.3)',color:'#9ca3af',dot:'#9ca3af'};
+  return `<span class="badge-s" style="background:${c.bg};color:${c.color}"><span style="width:6px;height:6px;border-radius:50%;background:${c.dot};display:inline-block"></span>${esc(c.label)}</span>`;
+}
+function calcOrderProfit(o) {
+  if(!o.custoEstimado||!o.salePrice) return null;
+  const p=r2(+o.salePrice-+o.custoEstimado);
+  const m=r2((p/+o.salePrice)*100);
+  return {profit:p, margin:m};
+}
+function nextStatus(current) {
+  const order=['aguardando','imprimindo','impresso','entregue'];
+  const i=order.indexOf(current);
+  return order[(i+1)%order.length];
+}
+function quickStatus(id) {
+  const i=state.orders.findIndex(o=>o.id===id);
+  if(i<0)return;
+  state.orders[i].status=nextStatus(state.orders[i].status);
+  saveAll();setTab('orders');
+}
+function copyOrder(id) {
+  const o=state.orders.find(x=>x.id===id);
+  if(!o)return;
+  const copy={...o,id:genId(),createdAt:today(),status:'aguardando',paymentStatus:'pendente',deadline:''};
+  state.orders=[copy,...state.orders];
+  saveAll();setTab('orders');
+}
+function exportOrdersCSV() {
+  const headers=['Descrição','Cliente','Tipo','Status','Prazo','Preço','Custo Est.','Lucro','Pagamento','Status Pag.','Data'];
+  const rows=state.orders.map(o=>{
+    const lp=calcOrderProfit(o);
+    return [
+      o.description,o.clientName||'',TIPO_VENDA[o.tipoVenda||'individual']?.label||'',
+      STATUS_MAP[o.status]?.label||o.status,o.deadline||'',
+      (o.salePrice||0).toFixed(2),(o.custoEstimado||''),lp?lp.profit.toFixed(2):'',
+      PAY_METHODS[o.paymentMethod]||'',PAY_STATUS_MAP[o.paymentStatus]?.label||'',o.createdAt||''
+    ].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
+  });
+  const csv=[headers.join(','),...rows].join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
+  a.download=`pedidos-caricartoon-${today()}.csv`;a.click();
+}
   const now=new Date();
   return state.orders.filter(o=>{if(o.status==='entregue'||!o.deadline)return false;return(new Date(o.deadline+'T12:00:00')-now)/86400000<=2;});
 }
@@ -194,13 +243,15 @@ function renderDashboard(main) {
   const revenue=delivered.reduce((s,o)=>s+(o.salePrice||0),0);
   const thisMonthExp=getMonthExpenses(now);
   const expenses=thisMonthExp.reduce((s,e)=>s+(e.amount||0),0);
-  const netProfit=r2(revenue-expenses);
+  const netProfit=r2(revenue-expenses); // Lucro real = Faturamento − Gastos (custo de produção entra pelos Gastos)
+  const b2bRev=delivered.filter(o=>o.tipoVenda==='b2b'||o.tipoVenda==='evento').reduce((s,o)=>s+(o.salePrice||0),0);
+  const indRev=revenue-b2bRev;
   const active=state.orders.filter(o=>o.status!=='entregue').length;
-  const toReceive=state.orders.filter(o=>o.paymentStatus!=='pago').reduce((s,o)=>s+(o.salePrice||0),0);
   const consignPending=state.consignment.filter(c=>c.status==='ativo').reduce((s,c)=>s+((+c.quantitySent-(+c.quantitySold||0))*+(c.yourPricePerUnit||0)),0);
   const alerts=getAlerts();
   const meta=state.settings.metaSemanal||1000;
 
+  // Weekly revenue (current week)
   const startOfWeek=new Date(now); startOfWeek.setDate(now.getDate()-now.getDay());
   const weekRevenue=state.orders.filter(o=>{
     const d=new Date((o.createdAt||today())+'T12:00:00');
@@ -235,6 +286,7 @@ function renderDashboard(main) {
       <div><h1 class="text-lg font-bold text-white">Dashboard</h1><p class="text-xs text-gray-500 mt-0.5">${new Date().toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p></div>
     </div>
     ${alertsHTML}
+    <!-- META SEMANAL -->
     <div class="mx-6 mt-4 bg-[#151926] border border-[#1e2535] rounded-xl p-4">
       <div class="flex items-center justify-between mb-2">
         <p class="text-xs font-bold text-gray-500 uppercase tracking-widest">🎯 Meta Semanal</p>
@@ -243,6 +295,24 @@ function renderDashboard(main) {
       <div class="progress-bar"><div class="progress-fill bg-violet-600" style="width:${metaPct}%"></div></div>
       <p class="text-xs text-gray-600 mt-1">${metaPct}% da meta atingida esta semana</p>
     </div>
+    <!-- B2B vs Individual split -->
+    ${revenue>0?`<div class="mx-6 mt-3 bg-[#151926] border border-[#1e2535] rounded-xl p-4">
+      <p class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">📊 Origem do faturamento do mês</p>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-[#0f1319] rounded-xl p-3 text-center">
+          <div class="text-xs text-[#38bdf8] font-semibold uppercase tracking-wider mb-1">B2B / Evento</div>
+          <div class="text-lg font-bold text-white">${fmt(b2bRev)}</div>
+          <div class="text-xs text-gray-600">${revenue>0?r2((b2bRev/revenue)*100):0}% do total</div>
+        </div>
+        <div class="bg-[#0f1319] rounded-xl p-3 text-center">
+          <div class="text-xs text-[#a78bfa] font-semibold uppercase tracking-wider mb-1">Individual</div>
+          <div class="text-lg font-bold text-white">${fmt(indRev)}</div>
+          <div class="text-xs text-gray-600">${revenue>0?r2((indRev/revenue)*100):0}% do total</div>
+        </div>
+      </div>
+    </div>`:''}
+
+    <!-- STAT CARDS -->
     <div class="grid grid-cols-3 gap-4 p-6 pb-3">
       ${sCard('Faturamento Mês',fmt(revenue),'Pedidos entregues','linear-gradient(135deg,#7c3aed,#4f46e5)','dollar-sign')}
       ${sCard('Gastos Mês',fmt(expenses),`${thisMonthExp.length} lançamento(s)`,'linear-gradient(135deg,#dc2626,#ef4444)','credit-card')}
@@ -253,6 +323,7 @@ function renderDashboard(main) {
       ${sCard('A Receber',fmt(toReceive),'Pagamentos pendentes','linear-gradient(135deg,#d97706,#f59e0b)','clock')}
       ${sCard('Consign. Pendente',fmt(consignPending),'Estoque em lojas','linear-gradient(135deg,#7c3aed,#a78bfa)','store')}
     </div>
+    <!-- CHARTS -->
     <div class="grid gap-4 px-6 pb-6" style="grid-template-columns:2fr 1fr">
       <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5">
         <p class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Últimos 6 meses — faturamento, lucro e gastos</p>
@@ -273,54 +344,79 @@ function renderDashboard(main) {
   },50);
 }
 function sCard(title,value,sub,gradient,icon){return `<div class="stat-card"><div class="bg-gradient" style="background:${gradient}"></div><div style="position:relative"><div style="width:32px;height:32px;border-radius:10px;background:${gradient};display:flex;align-items:center;justify-content:center;margin-bottom:12px"><i data-lucide="${icon}" style="width:14px;height:14px;color:white"></i></div><div class="text-xl font-bold text-white tracking-tight">${value}</div><div class="text-xs font-medium text-gray-400 mt-0.5">${title}</div>${sub?`<div class="text-xs text-gray-600 mt-0.5">${sub}</div>`:''}</div></div>`;}
-function badge(type, map) {
-  const c=map[type]||{label:type,bg:'rgba(107,114,128,0.3)',color:'#9ca3af',dot:'#9ca3af'};
-  return `<span class="badge-s" style="background:${c.bg};color:${c.color}"><span style="width:6px;height:6px;border-radius:50%;background:${c.dot};display:inline-block"></span>${esc(c.label)}</span>`;
-}
 
 // ── ORDERS ────────────────────────────────────────────────────────────────────
-let orderFilter='all', orderSearch='';
+let orderFilter='all', orderTipoFilter='all', orderSearch='';
 function renderOrders(main){
   const filtered=state.orders.filter(o=>{
     if(orderFilter!=='all'&&o.status!==orderFilter)return false;
+    if(orderTipoFilter!=='all'&&(o.tipoVenda||'individual')!==orderTipoFilter)return false;
     const s=orderSearch.toLowerCase();
     if(s&&!o.description?.toLowerCase().includes(s)&&!o.clientName?.toLowerCase().includes(s))return false;
     return true;
   }).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
 
   const rows=filtered.length===0
-    ?`<tr><td colspan="7" class="text-center py-16 text-gray-600"><i data-lucide="package" style="width:36px;height:36px;opacity:.3;margin:0 auto 12px"></i><p>Nenhum pedido encontrado</p></td></tr>`
+    ?`<tr><td colspan="8" class="text-center py-16 text-gray-600"><i data-lucide="package" style="width:36px;height:36px;opacity:.3;margin:0 auto 12px"></i><p>Nenhum pedido encontrado</p></td></tr>`
     :filtered.map(o=>{
       const ov=o.deadline&&o.status!=='entregue'&&new Date(o.deadline+'T12:00:00')<new Date();
-      return `<tr class="hover:bg-[#1a1f2e] transition cursor-pointer" onmouseenter="this.querySelector('.row-actions').style.opacity='1'" onmouseleave="this.querySelector('.row-actions').style.opacity='0'">
-        <td class="py-3 pr-4"><p class="font-semibold text-white">${esc(o.description)}</p><p class="text-xs text-gray-600">${esc(o.clientName||'Sem cliente')}</p></td>
-        <td class="py-3 pr-4">${badge(o.status,STATUS_MAP)}</td>
-        <td class="py-3 pr-4 text-xs font-mono ${ov?'text-red-400 font-bold':'text-gray-500'}">${fmtD(o.deadline)}${ov?' ⚠️':''}</td>
-        <td class="py-3 pr-4 font-bold text-white font-mono">${fmt(o.salePrice)}</td>
-        <td class="py-3 pr-4"><p class="text-xs text-gray-500">${PAY_METHODS[o.paymentMethod]||''}</p><p class="text-xs font-semibold" style="color:${PAY_STATUS_MAP[o.paymentStatus]?.color||'#fff'}">${PAY_STATUS_MAP[o.paymentStatus]?.label||''}</p></td>
-        <td class="py-3 pr-4 text-xs text-gray-500">${fmtD(o.createdAt)}</td>
-        <td class="py-3"><div class="row-actions flex gap-2"><button onclick="openOrderModal('${o.id}')" class="text-gray-600 hover:text-violet-400 transition"><i data-lucide="edit-2" class="w-3.5 h-3.5"></i></button><button onclick="deleteOrder('${o.id}')" class="text-gray-600 hover:text-red-400 transition"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></div></td>
+      const tv=TIPO_VENDA[o.tipoVenda||'individual'];
+      // Margem estimada = só referência por pedido, não entra no DRE
+      const lp=calcOrderProfit(o);
+      return `<tr class="hover:bg-[#1a1f2e] transition" onmouseenter="this.querySelector('.row-actions').style.opacity='1'" onmouseleave="this.querySelector('.row-actions').style.opacity='0'">
+        <td class="py-3 pr-3"><p class="font-semibold text-white text-sm">${esc(o.description)}</p><p class="text-xs text-gray-600">${esc(o.clientName||'Sem cliente')}</p></td>
+        <td class="py-3 pr-3"><span class="badge-s" style="background:${tv?.bg};color:${tv?.color}">${tv?.label||'Individual'}</span></td>
+        <td class="py-3 pr-3"><button onclick="quickStatus('${o.id}')" title="Clique para avançar status">${badge(o.status,STATUS_MAP)}</button></td>
+        <td class="py-3 pr-3 text-xs font-mono ${ov?'text-red-400 font-bold':'text-gray-500'}">${fmtD(o.deadline)}${ov?' ⚠️':''}</td>
+        <td class="py-3 pr-3 font-bold text-white font-mono">${fmt(o.salePrice)}</td>
+        <td class="py-3 pr-3">${lp
+          ?`<span class="font-mono text-sm ${lp.profit>=0?'text-emerald-400':'text-red-400'}">${fmt(lp.profit)}</span><span class="text-xs text-gray-600 ml-1">${lp.margin}%</span>`
+          :'<span class="text-xs text-gray-700">—</span>'}</td>
+        <td class="py-3 pr-3"><p class="text-xs text-gray-500">${PAY_METHODS[o.paymentMethod]||''}</p><p class="text-xs font-semibold" style="color:${PAY_STATUS_MAP[o.paymentStatus]?.color||'#fff'}">${PAY_STATUS_MAP[o.paymentStatus]?.label||''}</p></td>
+        <td class="py-3"><div class="row-actions flex gap-2">
+          <button onclick="openOrderModal('${o.id}')" class="text-gray-600 hover:text-violet-400" title="Editar"><i data-lucide="edit-2" class="w-3.5 h-3.5"></i></button>
+          <button onclick="copyOrder('${o.id}')" class="text-gray-600 hover:text-blue-400" title="Copiar pedido"><i data-lucide="copy" class="w-3.5 h-3.5"></i></button>
+          <button onclick="deleteOrder('${o.id}')" class="text-gray-600 hover:text-red-400" title="Excluir"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+        </div></td>
       </tr>`;
     }).join('');
 
-  const filterBtns=[['all','Todos'],['aguardando','Aguardando'],['imprimindo','Imprimindo'],['impresso','Impresso'],['entregue','Entregue']].map(([v,l])=>
-    `<button onclick="setOrderFilter('${v}')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition ${orderFilter===v?'bg-violet-600 text-white':'bg-[#1e2535] text-gray-500 hover:text-gray-300'}">${l}</button>`).join('');
+  const statusBtns=[['all','Todos'],['aguardando','Aguardando'],['imprimindo','Imprimindo'],['impresso','Impresso'],['entregue','Entregue']].map(([v,l])=>
+    `<button onclick="orderFilter='${v}';setTab('orders')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition ${orderFilter===v?'bg-violet-600 text-white':'bg-[#1e2535] text-gray-500 hover:text-gray-300'}">${l}</button>`).join('');
+
+  const tipoBtns=[['all','Todos os tipos'],...Object.entries(TIPO_VENDA).map(([k,v])=>[k,v.label])].map(([v,l])=>
+    `<button onclick="orderTipoFilter='${v}';setTab('orders')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${orderTipoFilter===v?'bg-[#1e2535] text-white border border-[#3a4055]':'bg-[#0f1319] text-gray-600 hover:text-gray-300'}">${l}</button>`).join('');
 
   const tot=filtered.reduce((s,o)=>s+(o.salePrice||0),0);
-  const totRow=filtered.length>0?`<tr class="border-t-2 border-[#2a3045]"><td colspan="3" class="py-3 text-xs font-bold text-gray-500 uppercase tracking-widest">${filtered.length} pedido(s)</td><td class="py-3 font-bold text-white font-mono">${fmt(tot)}</td><td colspan="3"></td></tr>`:'';
+  const totRow=filtered.length>0?`<tr class="border-t-2 border-[#2a3045]">
+    <td colspan="4" class="py-3 pr-3 text-xs font-bold text-gray-500 uppercase">${filtered.length} pedido(s)</td>
+    <td class="py-3 pr-3 font-bold text-white font-mono">${fmt(tot)}</td>
+    <td colspan="3"></td>
+  </tr>`:'';
 
   main.innerHTML=`
     <div class="flex items-center justify-between px-6 py-5 border-b border-[#1e2535]">
       <div><h1 class="text-lg font-bold text-white">Pedidos</h1><p class="text-xs text-gray-500 mt-0.5">${state.orders.length} pedido(s) no total</p></div>
-      <button onclick="openOrderModal(null)" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-violet-600 hover:bg-violet-500 text-white transition"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Novo Pedido</button>
+      <div class="flex gap-2">
+        <button onclick="exportOrdersCSV()" class="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold bg-[#1e2535] hover:bg-[#262e42] text-gray-300 transition"><i data-lucide="download" class="w-3.5 h-3.5"></i> Exportar CSV</button>
+        <button onclick="openOrderModal(null)" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-violet-600 hover:bg-violet-500 text-white transition"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Novo Pedido</button>
+      </div>
     </div>
-    <div class="flex items-center gap-3 px-6 py-3 border-b border-[#1e2535]">
-      <input class="ic max-w-xs" placeholder="🔍 Buscar..." value="${esc(orderSearch)}" oninput="orderSearch=this.value;setTab('orders')">
-      <div class="flex gap-1 ml-auto">${filterBtns}</div>
+    <div class="flex flex-col gap-2 px-6 py-3 border-b border-[#1e2535]">
+      <div class="flex items-center gap-3">
+        <input class="ic max-w-xs" placeholder="🔍 Buscar descrição ou cliente..." value="${esc(orderSearch)}" oninput="orderSearch=this.value;setTab('orders')">
+        <div class="flex gap-1 ml-auto flex-wrap">${statusBtns}</div>
+      </div>
+      <div class="flex gap-1 flex-wrap">${tipoBtns}</div>
     </div>
-    <div class="p-6 overflow-x-auto">
+    <div class="px-6 pb-1 pt-2">
+      <p class="text-xs text-gray-700">💡 Clique no badge de status para avançar rapidamente. Margem est. = referência por pedido, não entra no DRE.</p>
+    </div>
+    <div class="p-6 pt-2 overflow-x-auto">
       <table class="w-full text-sm">
-        <thead><tr class="text-left text-gray-600 text-xs uppercase tracking-widest border-b border-[#1e2535]">${['Pedido','Status','Prazo','Preço','Pagamento','Data',''].map(h=>`<th class="pb-3 pr-4 font-semibold">${h}</th>`).join('')}</tr></thead>
+        <thead><tr class="text-left text-gray-600 text-xs uppercase tracking-widest border-b border-[#1e2535]">
+          ${['Pedido','Tipo','Status','Prazo','Preço','Margem est.','Pagamento',''].map(h=>`<th class="pb-3 pr-3 font-semibold">${h}</th>`).join('')}
+        </tr></thead>
         <tbody class="divide-y divide-[#1a1f2e]">${rows}${totRow}</tbody>
       </table>
     </div>`;
@@ -330,20 +426,39 @@ function setOrderFilter(f){orderFilter=f;setTab('orders');}
 function deleteOrder(id){if(confirm('Excluir pedido?')){state.orders=state.orders.filter(o=>o.id!==id);saveAll();setTab('orders');}}
 
 // ── ORDER MODAL ───────────────────────────────────────────────────────────────
-// ALTERAÇÃO 1: Removidos todos os campos de custo de produção (peso, horas, material)
-// O formulário agora só pede: cliente, descrição, status, prazo, preço de venda, pagamento, obs.
 let editingOrder=null;
 function openOrderModal(id){
-  editingOrder=id?{...state.orders.find(o=>o.id===id)}:{id:'',clientId:'',clientName:'',description:'',notes:'',salePrice:'',status:'aguardando',deadline:'',paymentMethod:'pix',paymentStatus:'pendente'};
+  editingOrder=id
+    ?{...state.orders.find(o=>o.id===id)}
+    :{id:'',clientId:'',clientName:'',description:'',notes:'',tipoVenda:'individual',custoEstimado:'',salePrice:'',status:'aguardando',deadline:'',paymentMethod:'pix',paymentStatus:'pendente'};
   document.getElementById('modal-title').textContent=id?'Editar Pedido':'Novo Pedido';
-  document.getElementById('modal-box').style.maxWidth='560px';
+  document.getElementById('modal-box').style.maxWidth='580px';
   renderOrderForm();
   document.getElementById('modal').classList.remove('hidden');
   lucide.createIcons();
 }
+function updateProfitDisplay(){
+  const f=editingOrder;
+  const lp=calcOrderProfit(f);
+  const el=document.getElementById('profit-preview');
+  if(!el)return;
+  if(lp&&+f.salePrice>0){
+    el.style.display='flex';
+    document.getElementById('pv-profit').textContent=fmt(lp.profit);
+    document.getElementById('pv-margin').textContent=lp.margin+'%';
+    document.getElementById('pv-profit').style.color=lp.profit>=0?'#34d399':'#f87171';
+    document.getElementById('pv-margin').style.color=lp.margin>=20?'#34d399':lp.margin>=0?'#fbbf24':'#f87171';
+    el.style.background=lp.profit>=0?'rgba(52,211,153,0.05)':'rgba(248,113,113,0.05)';
+    el.style.borderColor=lp.profit>=0?'rgba(52,211,153,0.2)':'rgba(248,113,113,0.2)';
+  }else{
+    el.style.display='none';
+  }
+}
 function renderOrderForm(){
   const f=editingOrder;
   const cliOpts=state.clients.map(c=>`<option value="${esc(c.id)}" ${f.clientId===c.id?'selected':''}>${esc(c.name)}</option>`).join('');
+  const tipoOpts=Object.entries(TIPO_VENDA).map(([k,v])=>`<option value="${k}" ${(f.tipoVenda||'individual')===k?'selected':''}>${v.label}</option>`).join('');
+  const lp=calcOrderProfit(f);
   document.getElementById('modal-body').innerHTML=`
     <div class="space-y-4">
       <div class="grid grid-cols-2 gap-3">
@@ -353,8 +468,10 @@ function renderOrderForm(){
           <input class="ic" value="${esc(f.clientName)}" oninput="updateOrderField('clientName',this.value)" placeholder="Nome do cliente"></div>
       </div>
       <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Descrição *</label>
-        <input class="ic" value="${esc(f.description)}" oninput="updateOrderField('description',this.value)" placeholder="Ex: Miniatura personalizada Funko"></div>
-      <div class="grid grid-cols-2 gap-3">
+        <input class="ic" value="${esc(f.description)}" oninput="updateOrderField('description',this.value)" placeholder="Ex: 100 chaveiros personalizados Copa"></div>
+      <div class="grid grid-cols-3 gap-3">
+        <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Tipo de Venda</label>
+          <select class="ic" onchange="updateOrderField('tipoVenda',this.value)">${tipoOpts}</select></div>
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Status</label>
           <select class="ic" onchange="updateOrderField('status',this.value)">
             ${Object.entries(STATUS_MAP).map(([k,v])=>`<option value="${k}" ${f.status===k?'selected':''}>${v.label}</option>`).join('')}
@@ -364,11 +481,26 @@ function renderOrderForm(){
       </div>
       <div class="grid grid-cols-3 gap-3">
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Preço de venda (R$)</label>
-          <input type="number" class="ic" min="0" step="0.5" value="${f.salePrice}" oninput="updateOrderField('salePrice',this.value)" placeholder="0.00"></div>
+          <input type="number" class="ic" min="0" step="0.5" value="${f.salePrice}" oninput="updateOrderField('salePrice',this.value);updateProfitDisplay()" placeholder="0.00"></div>
+        <div>
+          <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Custo estimado (R$)
+            <span class="text-gray-700 font-normal normal-case ml-1">— referência</span>
+          </label>
+          <input type="number" class="ic" min="0" step="0.5" value="${f.custoEstimado||''}" oninput="updateOrderField('custoEstimado',+this.value);updateProfitDisplay()" placeholder="opcional"></div>
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Forma de pagamento</label>
           <select class="ic" onchange="updateOrderField('paymentMethod',this.value)">${Object.entries(PAY_METHODS).map(([k,v])=>`<option value="${k}" ${f.paymentMethod===k?'selected':''}>${v}</option>`).join('')}</select></div>
+      </div>
+      <div class="grid grid-cols-1 gap-3">
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Status pagamento</label>
           <select class="ic" onchange="updateOrderField('paymentStatus',this.value)">${Object.entries(PAY_STATUS_MAP).map(([k,v])=>`<option value="${k}" ${f.paymentStatus===k?'selected':''}>${v.label}</option>`).join('')}</select></div>
+      </div>
+      <!-- Preview de margem — só referência, não entra no DRE -->
+      <div id="profit-preview" style="display:${lp&&+f.salePrice>0?'flex':'none'};gap:24px" class="rounded-xl p-4 border items-center bg-emerald-400/5 border-emerald-400/20">
+        <div><p class="text-xs text-gray-500 mb-0.5 uppercase tracking-wider">Margem estimada</p>
+          <p id="pv-profit" class="text-xl font-bold text-emerald-400">${lp?fmt(lp.profit):'—'}</p></div>
+        <div><p class="text-xs text-gray-500 mb-0.5 uppercase tracking-wider">%</p>
+          <p id="pv-margin" class="text-xl font-bold text-emerald-400">${lp?lp.margin+'%':'—'}</p></div>
+        <p class="text-xs text-gray-600 ml-auto">⚠️ Referência por pedido.<br>Não afeta o DRE.</p>
       </div>
       <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Observações</label>
         <textarea class="ic resize-none" rows="2" oninput="updateOrderField('notes',this.value)" placeholder="Notas adicionais...">${esc(f.notes)}</textarea></div>
@@ -382,7 +514,14 @@ function updateOrderField(k,v){editingOrder[k]=v;}
 function updateOrderClientName(id){const c=state.clients.find(x=>x.id===id);if(c){editingOrder.clientName=c.name;const el=document.querySelector('[oninput*=clientName]');if(el)el.value=c.name;}}
 function saveOrder(){
   if(!editingOrder.description.trim())return alert('Informe a descrição!');
-  const o={...editingOrder,id:editingOrder.id||genId(),createdAt:editingOrder.createdAt||today(),salePrice:+editingOrder.salePrice||0};
+  const o={
+    ...editingOrder,
+    id:editingOrder.id||genId(),
+    createdAt:editingOrder.createdAt||today(),
+    tipoVenda:editingOrder.tipoVenda||'individual',
+    salePrice:+editingOrder.salePrice||0,
+    custoEstimado:editingOrder.custoEstimado?+editingOrder.custoEstimado:undefined,
+  };
   const i=state.orders.findIndex(x=>x.id===o.id);
   if(i>=0)state.orders[i]=o;else state.orders=[o,...state.orders];
   saveAll();closeModal();setTab('orders');
@@ -559,21 +698,16 @@ function saveConsign(){
 function deleteConsign(id){if(confirm('Excluir registro?')){state.consignment=state.consignment.filter(c=>c.id!==id);saveAll();setTab('consignacao');}}
 
 // ── GASTOS ────────────────────────────────────────────────────────────────────
-// ALTERAÇÃO 2: Adicionado modo "total" além do filtro por mês
-let editingExpense=null, gastoFilter='all', gastoMonth='', gastoViewMode='month';
+let editingExpense=null, gastoFilter='all', gastoMonth='';
 function renderGastos(main){
   const now=new Date();
   if(!gastoMonth)gastoMonth=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   const [gy,gm]=gastoMonth.split('-').map(Number);
-
-  // filtra por mês OU tudo dependendo do modo
   const filtered=state.expenses.filter(e=>{
-    if(gastoViewMode==='month'){
-      const d=new Date((e.date||today())+'T12:00:00');
-      if(d.getFullYear()!==gy||d.getMonth()!==(gm-1))return false;
-    }
+    const d=new Date((e.date||today())+'T12:00:00');
+    const monthOk=d.getFullYear()===gy&&d.getMonth()===(gm-1);
     const catOk=gastoFilter==='all'||e.category===gastoFilter;
-    return catOk;
+    return monthOk&&catOk;
   }).sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
 
   const total=filtered.reduce((s,e)=>s+(e.amount||0),0);
@@ -603,20 +737,11 @@ function renderGastos(main){
       <div class="progress-bar"><div class="progress-fill" style="width:${x.pct}%;background:#7c3aed"></div></div>
     </div>`).join('');
 
-  const periodoLabel = gastoViewMode==='total'
-    ? `${state.expenses.length} lançamento(s) no total`
-    : `Despesas — ${MONTHS[gm-1]}/${gy}`;
-
   main.innerHTML=`
     <div class="flex items-center justify-between px-6 py-5 border-b border-[#1e2535]">
-      <div><h1 class="text-lg font-bold text-white">Gastos</h1><p class="text-xs text-gray-500 mt-0.5">${periodoLabel}</p></div>
-      <div class="flex items-center gap-2">
-        <!-- toggle mês / total -->
-        <div class="flex bg-[#1a1f2e] border border-[#2a3045] rounded-xl p-1 gap-1">
-          <button onclick="gastoViewMode='month';setTab('gastos')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition ${gastoViewMode==='month'?'bg-violet-600 text-white':'text-gray-500 hover:text-gray-300'}">Por mês</button>
-          <button onclick="gastoViewMode='total';setTab('gastos')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition ${gastoViewMode==='total'?'bg-violet-600 text-white':'text-gray-500 hover:text-gray-300'}">Período total</button>
-        </div>
-        ${gastoViewMode==='month'?`<input type="month" class="ic" style="width:170px" value="${gastoMonth}" onchange="gastoMonth=this.value;setTab('gastos')">`:''}
+      <div><h1 class="text-lg font-bold text-white">Gastos</h1><p class="text-xs text-gray-500 mt-0.5">Controle de despesas do negócio</p></div>
+      <div class="flex items-center gap-3">
+        <input type="month" class="ic" style="width:170px" value="${gastoMonth}" onchange="gastoMonth=this.value;setTab('gastos')">
         <button onclick="openExpenseModal(null)" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-violet-600 hover:bg-violet-500 text-white transition"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Novo Gasto</button>
       </div>
     </div>
@@ -782,7 +907,7 @@ function renderFinanceiro(main){
     <div class="grid grid-cols-3 gap-4 p-6 pb-3">
       ${sCard('Faturamento Total',fmt(totRev),`${allDel.length} pedidos entregues`,'linear-gradient(135deg,#7c3aed,#4f46e5)','dollar-sign')}
       ${sCard('Gastos Totais',fmt(totGas),'Despesas operacionais registradas','linear-gradient(135deg,#dc2626,#ef4444)','credit-card')}
-      ${sCard('Lucro Líquido Total',fmt(totLucLiq),'Faturamento − Gastos (tudo)',totLucLiq>=0?'linear-gradient(135deg,#059669,#10b981)':'linear-gradient(135deg,#991b1b,#dc2626)','trending-up')}
+      ${sCard('Lucro Líquido',fmt(totLucLiq),'Faturamento − Gastos',totLucLiq>=0?'linear-gradient(135deg,#059669,#10b981)':'linear-gradient(135deg,#991b1b,#dc2626)','trending-up')}
     </div>
     <!-- GRAFICO 12 MESES -->
     <div class="px-6 pb-4">
@@ -831,7 +956,7 @@ function renderSettings(main){
     </div>
     <div class="p-6 max-w-lg space-y-4">
       <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5 space-y-4">
-        <p class="text-xs font-bold text-gray-600 uppercase tracking-widest">⚙️ Custos Padrão (para cálculo de sugestão de preço)</p>
+        <p class="text-xs font-bold text-gray-600 uppercase tracking-widest">⚙️ Custos Padrão</p>
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Preço padrão do filamento (R$/kg)</label>
           <input type="number" class="ic" step="1" min="0" value="${f.filamentPerGram}" oninput="editingSettings.filamentPerGram=+this.value"></div>
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Custo de energia (R$/hora)</label>
@@ -842,6 +967,16 @@ function renderSettings(main){
           <input type="number" class="ic" step="1" min="0" max="500" value="${f.defaultMargin}" oninput="editingSettings.defaultMargin=+this.value"></div>
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">🎯 Meta Semanal (R$)</label>
           <input type="number" class="ic" step="50" min="0" value="${f.metaSemanal||1000}" oninput="editingSettings.metaSemanal=+this.value"></div>
+      </div>
+      <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5">
+        <p class="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">💡 Fórmula de cálculo</p>
+        <div class="space-y-1.5 text-xs text-gray-500">
+          <p>🧵 Filamento: Peso × R$${(f.filamentPerGram/1000).toFixed(3)}/g (= R$${f.filamentPerGram}/kg)</p>
+          <p>⚡ Energia: Tempo impressão × R$${f.electricityPerHour}/h</p>
+          <p>👷 Mão de obra: Horas acabamento × R$${f.laborPerHour}/h</p>
+          <p>🔄 Falhas: 10% do custo de produção (automático)</p>
+          <p class="pt-2 border-t border-[#1e2535]">💰 Preço sugerido = Custo total × (1 + ${f.defaultMargin}%)</p>
+        </div>
       </div>
       <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5">
         <p class="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">💾 Backup de dados</p>
