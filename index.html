@@ -46,7 +46,7 @@
   </div>
 </div>
 
-<div id="app" class="hidden flex h-screen overflow-hidden">
+<div id="app" style="display:none" class="h-screen overflow-hidden">
   <!-- SIDEBAR -->
   <aside class="w-52 bg-[#0f1319] border-r border-[#1a1f2e] flex flex-col flex-shrink-0">
     <div class="px-4 py-5 border-b border-[#1a1f2e]">
@@ -1004,14 +1004,14 @@ document.getElementById('modal').addEventListener('click',function(e){if(e.targe
 // ── INIT ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-btn').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 initFinPeriods();
-state.orders    =stLoad(SK.o,[]);
-state.clients   =stLoad(SK.c,[]);
-state.materials =stLoad(SK.m,DEF_MATERIALS);
-state.settings  =stLoad(SK.s,DEF_SETTINGS);
-state.expenses  =stLoad(SK.e,[]);
-state.consignment=stLoad(SK.cs,[]);
-document.getElementById('loading').classList.add('hidden');
-document.getElementById('app').classList.remove('hidden');
+state.orders     = stLoad(SK.o, []);
+state.clients    = stLoad(SK.c, []);
+state.materials  = stLoad(SK.m, DEF_MATERIALS);
+state.settings   = stLoad(SK.s, DEF_SETTINGS);
+state.expenses   = stLoad(SK.e, []);
+state.consignment = stLoad(SK.cs, []);
+document.getElementById('loading').style.display = 'none';
+document.getElementById('app').style.display = 'flex';
 document.getElementById('app').style.display='flex';
 setTab('dashboard');
 </script>
