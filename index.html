@@ -46,7 +46,7 @@
   </div>
 </div>
 
-<div id="app" style="display:none" class="h-screen overflow-hidden">
+<div id="app" class="hidden flex h-screen overflow-hidden">
   <!-- SIDEBAR -->
   <aside class="w-52 bg-[#0f1319] border-r border-[#1a1f2e] flex flex-col flex-shrink-0">
     <div class="px-4 py-5 border-b border-[#1a1f2e]">
@@ -185,6 +185,9 @@ function exportOrdersCSV() {
   a.href=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
   a.download=`pedidos-caricartoon-${today()}.csv`;a.click();
 }
+
+// ── FIX 1: getAlerts com declaração correta ───────────────────────────────────
+function getAlerts() {
   const now=new Date();
   return state.orders.filter(o=>{if(o.status==='entregue'||!o.deadline)return false;return(new Date(o.deadline+'T12:00:00')-now)/86400000<=2;});
 }
@@ -243,10 +246,12 @@ function renderDashboard(main) {
   const revenue=delivered.reduce((s,o)=>s+(o.salePrice||0),0);
   const thisMonthExp=getMonthExpenses(now);
   const expenses=thisMonthExp.reduce((s,e)=>s+(e.amount||0),0);
-  const netProfit=r2(revenue-expenses); // Lucro real = Faturamento − Gastos (custo de produção entra pelos Gastos)
+  const netProfit=r2(revenue-expenses);
   const b2bRev=delivered.filter(o=>o.tipoVenda==='b2b'||o.tipoVenda==='evento').reduce((s,o)=>s+(o.salePrice||0),0);
   const indRev=revenue-b2bRev;
   const active=state.orders.filter(o=>o.status!=='entregue').length;
+  // ── FIX 2: toReceive definido antes de ser usado ──────────────────────────
+  const toReceive=r2(state.orders.filter(o=>o.paymentStatus!=='pago'&&o.status!=='entregue').reduce((s,o)=>s+(o.salePrice||0),0));
   const consignPending=state.consignment.filter(c=>c.status==='ativo').reduce((s,c)=>s+((+c.quantitySent-(+c.quantitySold||0))*+(c.yourPricePerUnit||0)),0);
   const alerts=getAlerts();
   const meta=state.settings.metaSemanal||1000;
@@ -361,7 +366,6 @@ function renderOrders(main){
     :filtered.map(o=>{
       const ov=o.deadline&&o.status!=='entregue'&&new Date(o.deadline+'T12:00:00')<new Date();
       const tv=TIPO_VENDA[o.tipoVenda||'individual'];
-      // Margem estimada = só referência por pedido, não entra no DRE
       const lp=calcOrderProfit(o);
       return `<tr class="hover:bg-[#1a1f2e] transition" onmouseenter="this.querySelector('.row-actions').style.opacity='1'" onmouseleave="this.querySelector('.row-actions').style.opacity='0'">
         <td class="py-3 pr-3"><p class="font-semibold text-white text-sm">${esc(o.description)}</p><p class="text-xs text-gray-600">${esc(o.clientName||'Sem cliente')}</p></td>
@@ -494,7 +498,6 @@ function renderOrderForm(){
         <div><label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Status pagamento</label>
           <select class="ic" onchange="updateOrderField('paymentStatus',this.value)">${Object.entries(PAY_STATUS_MAP).map(([k,v])=>`<option value="${k}" ${f.paymentStatus===k?'selected':''}>${v.label}</option>`).join('')}</select></div>
       </div>
-      <!-- Preview de margem — só referência, não entra no DRE -->
       <div id="profit-preview" style="display:${lp&&+f.salePrice>0?'flex':'none'};gap:24px" class="rounded-xl p-4 border items-center bg-emerald-400/5 border-emerald-400/20">
         <div><p class="text-xs text-gray-500 mb-0.5 uppercase tracking-wider">Margem estimada</p>
           <p id="pv-profit" class="text-xl font-bold text-emerald-400">${lp?fmt(lp.profit):'—'}</p></div>
@@ -903,20 +906,17 @@ function renderFinanceiro(main){
     <div class="flex items-center justify-between px-6 py-5 border-b border-[#1e2535]">
       <div><h1 class="text-lg font-bold text-white">Financeiro — DRE</h1><p class="text-xs text-gray-500">Demonstrativo de resultado completo</p></div>
     </div>
-    <!-- TOTAIS HISTORICOS -->
     <div class="grid grid-cols-3 gap-4 p-6 pb-3">
       ${sCard('Faturamento Total',fmt(totRev),`${allDel.length} pedidos entregues`,'linear-gradient(135deg,#7c3aed,#4f46e5)','dollar-sign')}
       ${sCard('Gastos Totais',fmt(totGas),'Despesas operacionais registradas','linear-gradient(135deg,#dc2626,#ef4444)','credit-card')}
       ${sCard('Lucro Líquido',fmt(totLucLiq),'Faturamento − Gastos',totLucLiq>=0?'linear-gradient(135deg,#059669,#10b981)':'linear-gradient(135deg,#991b1b,#dc2626)','trending-up')}
     </div>
-    <!-- GRAFICO 12 MESES -->
     <div class="px-6 pb-4">
       <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5">
         <p class="text-xs font-bold text-gray-600 uppercase tracking-widest mb-4">Últimos 12 meses — Faturamento, Gastos e Lucro Líquido</p>
         <div style="height:240px"><canvas id="chart-fin"></canvas></div>
       </div>
     </div>
-    <!-- COMPARATIVO -->
     <div class="px-6 pb-6">
       <div class="bg-[#151926] border border-[#1e2535] rounded-2xl p-5">
         <p class="text-xs font-bold text-gray-600 uppercase tracking-widest mb-4">Comparativo entre Períodos</p>
@@ -1004,14 +1004,14 @@ document.getElementById('modal').addEventListener('click',function(e){if(e.targe
 // ── INIT ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-btn').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 initFinPeriods();
-state.orders     = stLoad(SK.o, []);
-state.clients    = stLoad(SK.c, []);
-state.materials  = stLoad(SK.m, DEF_MATERIALS);
-state.settings   = stLoad(SK.s, DEF_SETTINGS);
-state.expenses   = stLoad(SK.e, []);
-state.consignment = stLoad(SK.cs, []);
-document.getElementById('loading').style.display = 'none';
-document.getElementById('app').style.display = 'flex';
+state.orders    =stLoad(SK.o,[]);
+state.clients   =stLoad(SK.c,[]);
+state.materials =stLoad(SK.m,DEF_MATERIALS);
+state.settings  =stLoad(SK.s,DEF_SETTINGS);
+state.expenses  =stLoad(SK.e,[]);
+state.consignment=stLoad(SK.cs,[]);
+document.getElementById('loading').classList.add('hidden');
+document.getElementById('app').classList.remove('hidden');
 document.getElementById('app').style.display='flex';
 setTab('dashboard');
 </script>
